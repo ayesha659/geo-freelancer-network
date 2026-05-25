@@ -1,0 +1,435 @@
+import { useState, useEffect, useRef } from "react";
+import { supabase } from "./supabase";
+
+const STAGES = ["Upwork Shortlist","Vetting","Trial","Onboarded","Active","Paused","Rejected"];
+const STAGE_META = {
+  "Upwork Shortlist": { color: "#6366f1", bg: "#eef2ff", short: "UW" },
+  "Vetting":          { color: "#f59e0b", bg: "#fffbeb", short: "VT" },
+  "Trial":            { color: "#3b82f6", bg: "#eff6ff", short: "TR" },
+  "Onboarded":        { color: "#8b5cf6", bg: "#f5f3ff", short: "ON" },
+  "Active":           { color: "#10b981", bg: "#ecfdf5", short: "AC" },
+  "Paused":           { color: "#94a3b8", bg: "#f8fafc", short: "PA" },
+  "Rejected":         { color: "#ef4444", bg: "#fef2f2", short: "RJ" },
+};
+const PLATFORMS = ["Reddit","Quora","Both"];
+const VERTICALS = ["Finance","Tech / SaaS","Health & Wellness","D2C / E-commerce","Travel & Lifestyle","Gaming","Education","General"];
+const EMPTY_FORM = {
+  name:"", upwork_url:"", platform:"Reddit", vertical:"Tech / SaaS",
+  stage:"Upwork Shortlist", score:"", karma_score:"", account_age:"",
+  rate:"", timezone:"IST", notes:"", assigned_to:"", clients:"",
+  posts_per_week:"", joined_date: new Date().toISOString().split("T")[0],
+};
+
+function PlatformBadge({ p }) {
+  const colors = { Reddit:{bg:"#fff1f0",color:"#ff4500"}, Quora:{bg:"#fff0f5",color:"#b92b27"}, Both:{bg:"#f0fdf4",color:"#16a34a"} };
+  const c = colors[p] || colors["Both"];
+  return <span style={{fontSize:"10px",fontWeight:"700",background:c.bg,color:c.color,borderRadius:"4px",padding:"2px 6px",letterSpacing:"0.02em",whiteSpace:"nowrap"}}>{p}</span>;
+}
+
+export default function App() {
+  const [freelancers, setFreelancers] = useState([]);
+  const [view, setView] = useState("pipeline");
+  const [selected, setSelected] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [editId, setEditId] = useState(null);
+  const [filterStage, setFilterStage] = useState("All");
+  const [filterPlatform, setFilterPlatform] = useState("All");
+  const [filterVertical, setFilterVertical] = useState("All");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => { fetchAll(); }, []);
+
+  async function fetchAll() {
+    setLoading(true);
+    const { data, error } = await supabase.from("freelancers").select("*").order("id", { ascending: true });
+    if (error) { setError("Could not connect to database. Check your Supabase credentials."); }
+    else { setFreelancers(data || []); }
+    setLoading(false);
+  }
+
+  function showToast(msg) { setToast(msg); setTimeout(() => setToast(""), 2200); }
+
+  function openAdd() { setForm(EMPTY_FORM); setEditId(null); setShowForm(true); }
+  function openEdit(f) {
+    setForm({
+      name: f.name||"", upwork_url: f.upwork_url||"", platform: f.platform||"Reddit",
+      vertical: f.vertical||"General", stage: f.stage||"Upwork Shortlist",
+      score: f.score||"", karma_score: f.karma_score||"", account_age: f.account_age||"",
+      rate: f.rate||"", timezone: f.timezone||"", notes: f.notes||"",
+      assigned_to: f.assigned_to||"", clients: f.clients||"",
+      posts_per_week: f.posts_per_week||"",
+      joined_date: f.joined_date || new Date().toISOString().split("T")[0],
+    });
+    setEditId(f.id);
+    setShowForm(true);
+  }
+
+  async function submitForm() {
+    if (!form.name.trim()) return;
+    setSaving(true);
+    const payload = { ...form, score: form.score ? parseInt(form.score) : null, rate: form.rate ? parseFloat(form.rate) : null, posts_per_week: form.posts_per_week ? parseInt(form.posts_per_week) : null, karma_score: form.karma_score ? parseInt(form.karma_score) : null };
+    if (editId !== null) {
+      const { error } = await supabase.from("freelancers").update(payload).eq("id", editId);
+      if (!error) { showToast("Freelancer updated"); fetchAll(); if (selected?.id === editId) setSelected({ ...selected, ...payload, id: editId }); }
+    } else {
+      const { error } = await supabase.from("freelancers").insert([payload]);
+      if (!error) { showToast("Freelancer added"); fetchAll(); }
+    }
+    setSaving(false);
+    setShowForm(false);
+  }
+
+  async function deleteFreelancer(id) {
+    await supabase.from("freelancers").delete().eq("id", id);
+    setFreelancers(prev => prev.filter(f => f.id !== id));
+    if (selected?.id === id) { setSelected(null); setView("pipeline"); }
+    showToast("Removed");
+  }
+
+  async function moveStage(id, direction) {
+    const f = freelancers.find(x => x.id === id);
+    if (!f) return;
+    const idx = STAGES.indexOf(f.stage);
+    const newStage = STAGES[Math.max(0, Math.min(STAGES.length - 1, idx + direction))];
+    await supabase.from("freelancers").update({ stage: newStage }).eq("id", id);
+    setFreelancers(prev => prev.map(x => x.id === id ? { ...x, stage: newStage } : x));
+    if (selected?.id === id) setSelected(prev => ({ ...prev, stage: newStage }));
+  }
+
+  const filtered = () => freelancers.filter(f => {
+    if (filterStage !== "All" && f.stage !== filterStage) return false;
+    if (filterPlatform !== "All" && f.platform !== filterPlatform) return false;
+    if (filterVertical !== "All" && f.vertical !== filterVertical) return false;
+    if (search && !f.name?.toLowerCase().includes(search.toLowerCase()) && !f.vertical?.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const counts = STAGES.reduce((acc, s) => ({ ...acc, [s]: freelancers.filter(f => f.stage === s).length }), {});
+
+  if (loading) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#f8fafc",fontFamily:"'DM Sans',system-ui,sans-serif",flexDirection:"column",gap:"12px"}}>
+      <div style={{width:"32px",height:"32px",border:"3px solid #e2e8f0",borderTop:"3px solid #6366f1",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}></div>
+      <span style={{color:"#94a3b8",fontSize:"14px"}}>Loading network…</span>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+
+  if (error) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#f8fafc",fontFamily:"'DM Sans',system-ui,sans-serif",flexDirection:"column",gap:"12px",padding:"2rem",textAlign:"center"}}>
+      <div style={{fontSize:"32px"}}>⚠️</div>
+      <div style={{fontWeight:"600",color:"#1e293b"}}>Database connection failed</div>
+      <div style={{color:"#64748b",fontSize:"14px",maxWidth:"400px"}}>{error}</div>
+      <div style={{background:"#f1f5f9",borderRadius:"8px",padding:"1rem",fontSize:"13px",color:"#475569",maxWidth:"400px",textAlign:"left"}}>
+        <strong>Check that:</strong><br/>
+        1. VITE_SUPABASE_URL is set in Netlify<br/>
+        2. VITE_SUPABASE_ANON_KEY is set in Netlify<br/>
+        3. Your Supabase table is named <code>freelancers</code>
+      </div>
+    </div>
+  );
+
+  const selectedFull = selected ? (freelancers.find(x => x.id === selected.id) || selected) : null;
+
+  return (
+    <div style={{fontFamily:"'DM Sans',system-ui,sans-serif",minHeight:"100vh",background:"#f8fafc",color:"#1e293b"}}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+
+      {/* Header */}
+      <div style={{background:"#0f172a",padding:"0 1.5rem",display:"flex",alignItems:"center",justifyContent:"space-between",height:"52px",position:"sticky",top:0,zIndex:50}}>
+        <div style={{display:"flex",alignItems:"center",gap:"12px"}}>
+          <div style={{width:"28px",height:"28px",background:"#6366f1",borderRadius:"8px",display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          </div>
+          <span style={{color:"white",fontWeight:"600",fontSize:"14px"}}>GEO Freelancer Network</span>
+          {saving && <span style={{fontSize:"11px",color:"#64748b"}}>saving…</span>}
+        </div>
+        <div style={{display:"flex",gap:"4px",alignItems:"center"}}>
+          {["pipeline","list"].map(v => (
+            <button key={v} onClick={() => setView(v)} style={{padding:"5px 12px",borderRadius:"6px",border:"none",cursor:"pointer",fontSize:"12px",fontWeight:"500",background:view===v?"#1e293b":"transparent",color:view===v?"white":"#94a3b8",fontFamily:"inherit"}}>
+              {v === "pipeline" ? "Pipeline" : "All Freelancers"}
+            </button>
+          ))}
+          <button onClick={openAdd} style={{marginLeft:"8px",padding:"5px 14px",borderRadius:"6px",border:"none",cursor:"pointer",fontSize:"12px",fontWeight:"600",background:"#6366f1",color:"white",fontFamily:"inherit"}}>+ Add</button>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:"1px",background:"#e2e8f0",borderBottom:"1px solid #e2e8f0"}}>
+        {[
+          {label:"Total freelancers",value:freelancers.length,color:"#6366f1"},
+          {label:"In pipeline",value:(counts["Upwork Shortlist"]||0)+(counts["Vetting"]||0)+(counts["Trial"]||0),color:"#f59e0b"},
+          {label:"On trial",value:counts["Trial"]||0,color:"#3b82f6"},
+          {label:"Active network",value:counts["Active"]||0,color:"#10b981"},
+          {label:"Total onboarded",value:(counts["Onboarded"]||0)+(counts["Active"]||0)+(counts["Paused"]||0),color:"#8b5cf6"},
+        ].map(s => (
+          <div key={s.label} style={{background:"white",padding:"12px 16px"}}>
+            <div style={{fontSize:"22px",fontWeight:"600",color:s.color,lineHeight:1}}>{s.value}</div>
+            <div style={{fontSize:"11px",color:"#94a3b8",marginTop:"3px"}}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div style={{background:"white",borderBottom:"1px solid #e2e8f0",padding:"8px 1.5rem",display:"flex",gap:"8px",alignItems:"center",flexWrap:"wrap"}}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name or vertical…" style={{padding:"5px 10px",border:"1px solid #e2e8f0",borderRadius:"6px",fontSize:"12px",fontFamily:"inherit",color:"#1e293b",width:"180px"}}/>
+        <select value={filterStage} onChange={e=>setFilterStage(e.target.value)} style={{padding:"5px 8px",border:"1px solid #e2e8f0",borderRadius:"6px",fontSize:"12px",fontFamily:"inherit",color:"#1e293b"}}>
+          <option value="All">All stages</option>
+          {STAGES.map(s=><option key={s}>{s}</option>)}
+        </select>
+        <select value={filterPlatform} onChange={e=>setFilterPlatform(e.target.value)} style={{padding:"5px 8px",border:"1px solid #e2e8f0",borderRadius:"6px",fontSize:"12px",fontFamily:"inherit",color:"#1e293b"}}>
+          <option value="All">All platforms</option>
+          {PLATFORMS.map(p=><option key={p}>{p}</option>)}
+        </select>
+        <select value={filterVertical} onChange={e=>setFilterVertical(e.target.value)} style={{padding:"5px 8px",border:"1px solid #e2e8f0",borderRadius:"6px",fontSize:"12px",fontFamily:"inherit",color:"#1e293b"}}>
+          <option value="All">All verticals</option>
+          {VERTICALS.map(v=><option key={v}>{v}</option>)}
+        </select>
+        <span style={{fontSize:"11px",color:"#94a3b8",marginLeft:"auto"}}>{filtered().length} freelancer{filtered().length!==1?"s":""}</span>
+      </div>
+
+      {/* Main */}
+      <div style={{display:"flex",minHeight:"calc(100vh - 160px)"}}>
+        <div style={{flex:1,overflow:"auto"}}>
+
+          {/* PIPELINE */}
+          {view==="pipeline" && (
+            <div style={{padding:"1.25rem 1.5rem",overflowX:"auto"}}>
+              <div style={{display:"grid",gridTemplateColumns:`repeat(${STAGES.length},minmax(160px,1fr))`,gap:"10px",minWidth:"1100px"}}>
+                {STAGES.map(stage => {
+                  const meta = STAGE_META[stage];
+                  const sf = filtered().filter(f=>f.stage===stage);
+                  return (
+                    <div key={stage}>
+                      <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px"}}>
+                        <span style={{width:"8px",height:"8px",borderRadius:"50%",background:meta.color,flexShrink:0}}></span>
+                        <span style={{fontSize:"11px",fontWeight:"600",color:"#64748b",letterSpacing:"0.04em",textTransform:"uppercase"}}>{stage}</span>
+                        <span style={{marginLeft:"auto",fontSize:"11px",background:meta.bg,color:meta.color,borderRadius:"10px",padding:"1px 7px",fontWeight:"600"}}>{sf.length}</span>
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",gap:"6px",minHeight:"60px"}}>
+                        {sf.map(f=>(
+                          <div key={f.id} onClick={()=>{setSelected(f);setView("detail");}}
+                            style={{background:"white",border:`1px solid ${selected?.id===f.id?meta.color:"#e2e8f0"}`,borderRadius:"8px",padding:"10px 12px",cursor:"pointer",boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
+                            <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:"6px"}}>
+                              <div style={{fontWeight:"500",fontSize:"13px",lineHeight:1.3}}>{f.name}</div>
+                              <PlatformBadge p={f.platform}/>
+                            </div>
+                            <div style={{fontSize:"11px",color:"#94a3b8",marginTop:"4px"}}>{f.vertical}</div>
+                            {f.score && <div style={{marginTop:"6px",display:"flex",alignItems:"center",gap:"4px"}}>
+                              <div style={{flex:1,height:"3px",background:"#f1f5f9",borderRadius:"2px"}}>
+                                <div style={{width:`${Math.min(100,f.score)}%`,height:"100%",background:f.score>=70?"#10b981":f.score>=50?"#f59e0b":"#ef4444",borderRadius:"2px"}}></div>
+                              </div>
+                              <span style={{fontSize:"10px",color:"#64748b",fontFamily:"monospace"}}>{f.score}</span>
+                            </div>}
+                            {f.assigned_to && <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"5px"}}>→ {f.assigned_to}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* LIST */}
+          {view==="list" && (
+            <div style={{padding:"1.25rem 1.5rem"}}>
+              <div style={{background:"white",border:"1px solid #e2e8f0",borderRadius:"10px",overflow:"hidden"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:"13px"}}>
+                  <thead>
+                    <tr style={{background:"#f8fafc"}}>
+                      {["Name","Platform","Vertical","Stage","Score","Rate/hr","Posts/wk","Assigned","Clients",""].map(h=>(
+                        <th key={h} style={{padding:"10px 14px",textAlign:"left",fontSize:"11px",fontWeight:"600",color:"#64748b",borderBottom:"1px solid #e2e8f0",letterSpacing:"0.04em",textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered().map((f,i)=>{
+                      const meta=STAGE_META[f.stage]||STAGE_META["Upwork Shortlist"];
+                      return (
+                        <tr key={f.id} style={{borderBottom:i<filtered().length-1?"1px solid #f1f5f9":"none",cursor:"pointer"}} onClick={()=>{setSelected(f);setView("detail");}}>
+                          <td style={{padding:"10px 14px",fontWeight:"500"}}>{f.name}</td>
+                          <td style={{padding:"10px 14px"}}><PlatformBadge p={f.platform}/></td>
+                          <td style={{padding:"10px 14px",color:"#64748b"}}>{f.vertical}</td>
+                          <td style={{padding:"10px 14px"}}><span style={{background:meta.bg,color:meta.color,borderRadius:"10px",padding:"2px 8px",fontSize:"11px",fontWeight:"600"}}>{f.stage}</span></td>
+                          <td style={{padding:"10px 14px"}}>{f.score?<span style={{fontFamily:"monospace",fontSize:"12px",color:f.score>=70?"#10b981":f.score>=50?"#f59e0b":"#ef4444",fontWeight:"600"}}>{f.score}</span>:<span style={{color:"#cbd5e1"}}>—</span>}</td>
+                          <td style={{padding:"10px 14px",color:"#64748b"}}>{f.rate?`$${f.rate}`:"-"}</td>
+                          <td style={{padding:"10px 14px",color:"#64748b"}}>{f.posts_per_week||"—"}</td>
+                          <td style={{padding:"10px 14px",color:"#64748b"}}>{f.assigned_to||"—"}</td>
+                          <td style={{padding:"10px 14px",color:"#64748b",maxWidth:"120px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.clients||"—"}</td>
+                          <td style={{padding:"10px 14px"}}>
+                            <button onClick={e=>{e.stopPropagation();openEdit(f);}} style={{padding:"3px 8px",border:"1px solid #e2e8f0",borderRadius:"5px",background:"transparent",fontSize:"11px",cursor:"pointer",fontFamily:"inherit",color:"#64748b"}}>Edit</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filtered().length===0&&<tr><td colSpan={10} style={{padding:"2rem",textAlign:"center",color:"#94a3b8",fontSize:"13px"}}>No freelancers match your filters.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* DETAIL */}
+          {view==="detail" && selectedFull && (()=>{
+            const f = selectedFull;
+            const meta = STAGE_META[f.stage]||STAGE_META["Upwork Shortlist"];
+            const stageIdx = STAGES.indexOf(f.stage);
+            return (
+              <div style={{padding:"1.25rem 1.5rem"}}>
+                <button onClick={()=>setView("pipeline")} style={{display:"flex",alignItems:"center",gap:"6px",background:"none",border:"none",cursor:"pointer",fontSize:"12px",color:"#64748b",marginBottom:"1rem",fontFamily:"inherit",padding:0}}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+                  Back to pipeline
+                </button>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 300px",gap:"12px",alignItems:"start"}}>
+                  <div style={{display:"flex",flexDirection:"column",gap:"12px"}}>
+                    <div style={{background:"white",border:"1px solid #e2e8f0",borderRadius:"10px",padding:"1.25rem"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                        <div>
+                          <div style={{fontWeight:"600",fontSize:"18px",marginBottom:"6px"}}>{f.name}</div>
+                          <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+                            <PlatformBadge p={f.platform}/>
+                            <span style={{fontSize:"11px",background:"#f1f5f9",color:"#475569",borderRadius:"10px",padding:"2px 8px",fontWeight:"500"}}>{f.vertical}</span>
+                            {f.timezone&&<span style={{fontSize:"11px",background:"#f1f5f9",color:"#475569",borderRadius:"10px",padding:"2px 8px"}}>{f.timezone}</span>}
+                          </div>
+                        </div>
+                        <div style={{display:"flex",gap:"6px"}}>
+                          <button onClick={()=>openEdit(f)} style={{padding:"6px 12px",border:"1px solid #e2e8f0",borderRadius:"6px",background:"white",fontSize:"12px",cursor:"pointer",fontFamily:"inherit"}}>Edit</button>
+                          <button onClick={()=>{if(window.confirm("Remove this freelancer?"))deleteFreelancer(f.id);}} style={{padding:"6px 12px",border:"1px solid #fee2e2",borderRadius:"6px",background:"white",fontSize:"12px",cursor:"pointer",fontFamily:"inherit",color:"#ef4444"}}>Remove</button>
+                        </div>
+                      </div>
+                      <div style={{marginTop:"1.25rem"}}>
+                        <div style={{fontSize:"11px",color:"#94a3b8",marginBottom:"8px",fontWeight:"600",textTransform:"uppercase",letterSpacing:"0.04em"}}>Stage progression</div>
+                        <div style={{display:"flex",alignItems:"center"}}>
+                          {STAGES.map((s,i)=>{
+                            const m=STAGE_META[s];
+                            const active=i===stageIdx;
+                            const done=i<stageIdx&&s!=="Rejected"&&f.stage!=="Rejected";
+                            return (
+                              <div key={s} style={{display:"flex",alignItems:"center",flex:1}}>
+                                <div style={{display:"flex",flexDirection:"column",alignItems:"center",flex:1}}>
+                                  <div style={{width:"24px",height:"24px",borderRadius:"50%",background:active?m.color:done?"#e2e8f0":"#f8fafc",border:`2px solid ${active?m.color:done?"#cbd5e1":"#e2e8f0"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"9px",fontWeight:"700",color:active?"white":done?"#94a3b8":"#cbd5e1"}}>
+                                    {done?"✓":m.short}
+                                  </div>
+                                  <div style={{fontSize:"9px",color:active?m.color:"#94a3b8",marginTop:"3px",textAlign:"center",fontWeight:active?"600":"400",whiteSpace:"nowrap",overflow:"hidden",maxWidth:"58px",textOverflow:"ellipsis"}}>{s}</div>
+                                </div>
+                                {i<STAGES.length-1&&<div style={{height:"2px",width:"100%",background:done?"#cbd5e1":"#f1f5f9",margin:"0 2px",marginBottom:"14px"}}></div>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div style={{display:"flex",gap:"6px",marginTop:"12px"}}>
+                          <button disabled={stageIdx===0} onClick={()=>moveStage(f.id,-1)} style={{flex:1,padding:"6px",border:"1px solid #e2e8f0",borderRadius:"6px",background:"white",fontSize:"11px",cursor:stageIdx===0?"not-allowed":"pointer",fontFamily:"inherit",color:"#64748b",opacity:stageIdx===0?0.4:1}}>← Previous stage</button>
+                          <button disabled={stageIdx===STAGES.length-1} onClick={()=>moveStage(f.id,1)} style={{flex:1,padding:"6px",border:`1px solid ${meta.color}`,borderRadius:"6px",background:meta.bg,fontSize:"11px",cursor:stageIdx===STAGES.length-1?"not-allowed":"pointer",fontFamily:"inherit",color:meta.color,fontWeight:"600",opacity:stageIdx===STAGES.length-1?0.4:1}}>Move to {STAGES[stageIdx+1]||"—"} →</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{background:"white",border:"1px solid #e2e8f0",borderRadius:"10px",padding:"1.25rem"}}>
+                      <div style={{fontSize:"11px",color:"#94a3b8",fontWeight:"600",textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:"8px"}}>Notes</div>
+                      <div style={{fontSize:"13px",color:"#475569",lineHeight:1.6}}>{f.notes||<span style={{color:"#cbd5e1"}}>No notes yet.</span>}</div>
+                    </div>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
+                    {f.score&&(
+                      <div style={{background:"white",border:"1px solid #e2e8f0",borderRadius:"10px",padding:"1rem"}}>
+                        <div style={{fontSize:"11px",color:"#94a3b8",fontWeight:"600",textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:"10px"}}>Vetting score</div>
+                        <div style={{display:"flex",alignItems:"baseline",gap:"4px"}}>
+                          <span style={{fontSize:"36px",fontWeight:"700",color:f.score>=70?"#10b981":f.score>=50?"#f59e0b":"#ef4444",lineHeight:1}}>{f.score}</span>
+                          <span style={{fontSize:"14px",color:"#94a3b8"}}> / 100</span>
+                        </div>
+                        <div style={{marginTop:"8px",height:"6px",background:"#f1f5f9",borderRadius:"3px"}}>
+                          <div style={{width:`${Math.min(100,f.score)}%`,height:"100%",background:f.score>=70?"#10b981":f.score>=50?"#f59e0b":"#ef4444",borderRadius:"3px"}}></div>
+                        </div>
+                        <div style={{fontSize:"12px",color:f.score>=70?"#10b981":f.score>=50?"#f59e0b":"#ef4444",marginTop:"6px",fontWeight:"600"}}>{f.score>=70?"Strong hire":f.score>=50?"Second interview":"Pass"}</div>
+                      </div>
+                    )}
+                    <div style={{background:"white",border:"1px solid #e2e8f0",borderRadius:"10px",padding:"1rem"}}>
+                      <div style={{fontSize:"11px",color:"#94a3b8",fontWeight:"600",textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:"10px"}}>Profile stats</div>
+                      {[
+                        {label:"Karma score",value:f.karma_score?Number(f.karma_score).toLocaleString():null},
+                        {label:"Account age",value:f.account_age},
+                        {label:"Rate",value:f.rate?`$${f.rate}/hr`:null},
+                        {label:"Posts per week",value:f.posts_per_week},
+                        {label:"Joined network",value:f.joined_date},
+                        {label:"Assigned to",value:f.assigned_to},
+                        {label:"Active clients",value:f.clients},
+                      ].map(({label,value})=>(
+                        <div key={label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:"1px solid #f8fafc"}}>
+                          <span style={{fontSize:"12px",color:"#94a3b8"}}>{label}</span>
+                          <span style={{fontSize:"12px",fontWeight:"500",color:value?"#1e293b":"#cbd5e1"}}>{value||"—"}</span>
+                        </div>
+                      ))}
+                    </div>
+                    {f.upwork_url&&(
+                      <a href={f.upwork_url} target="_blank" rel="noreferrer" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"6px",background:"#14a800",color:"white",borderRadius:"8px",padding:"10px",fontSize:"12px",fontWeight:"600",textDecoration:"none"}}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg>
+                        View on Upwork
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+
+      {/* FORM MODAL */}
+      {showForm&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100,padding:"1rem"}}>
+          <div style={{background:"white",borderRadius:"12px",width:"100%",maxWidth:"560px",maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.2)"}}>
+            <div style={{padding:"1.25rem 1.5rem",borderBottom:"1px solid #e2e8f0",display:"flex",justifyContent:"space-between",alignItems:"center",position:"sticky",top:0,background:"white",zIndex:1}}>
+              <span style={{fontWeight:"600",fontSize:"15px"}}>{editId?"Edit freelancer":"Add freelancer"}</span>
+              <button onClick={()=>setShowForm(false)} style={{background:"none",border:"none",cursor:"pointer",fontSize:"20px",color:"#94a3b8",lineHeight:1}}>×</button>
+            </div>
+            <div style={{padding:"1.25rem 1.5rem",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px"}}>
+              {[
+                {key:"name",label:"Full name *",type:"text",full:true},
+                {key:"upwork_url",label:"Upwork profile URL",type:"text",full:true},
+                {key:"platform",label:"Platform",type:"select",opts:PLATFORMS},
+                {key:"vertical",label:"Vertical",type:"select",opts:VERTICALS},
+                {key:"stage",label:"Stage",type:"select",opts:STAGES},
+                {key:"score",label:"Vetting score (0–100)",type:"number"},
+                {key:"karma_score",label:"Karma score",type:"number"},
+                {key:"account_age",label:"Account age",type:"text"},
+                {key:"rate",label:"Rate ($/hr)",type:"number"},
+                {key:"posts_per_week",label:"Posts per week",type:"number"},
+                {key:"timezone",label:"Timezone",type:"text"},
+                {key:"assigned_to",label:"Assigned to",type:"text"},
+                {key:"clients",label:"Active clients",type:"text",full:true},
+                {key:"joined_date",label:"Date added",type:"date"},
+                {key:"notes",label:"Notes",type:"textarea",full:true},
+              ].map(field=>(
+                <div key={field.key} style={{gridColumn:field.full?"1 / -1":"auto"}}>
+                  <label style={{display:"block",fontSize:"11px",fontWeight:"600",color:"#64748b",marginBottom:"4px",textTransform:"uppercase",letterSpacing:"0.04em"}}>{field.label}</label>
+                  {field.type==="select"?(
+                    <select value={form[field.key]} onChange={e=>setForm(p=>({...p,[field.key]:e.target.value}))} style={{width:"100%",padding:"7px 10px",border:"1px solid #e2e8f0",borderRadius:"6px",fontSize:"13px",fontFamily:"inherit",color:"#1e293b"}}>
+                      {field.opts.map(o=><option key={o}>{o}</option>)}
+                    </select>
+                  ):field.type==="textarea"?(
+                    <textarea value={form[field.key]} onChange={e=>setForm(p=>({...p,[field.key]:e.target.value}))} rows={3} style={{width:"100%",padding:"7px 10px",border:"1px solid #e2e8f0",borderRadius:"6px",fontSize:"13px",fontFamily:"inherit",color:"#1e293b",resize:"vertical",boxSizing:"border-box"}}/>
+                  ):(
+                    <input type={field.type} value={form[field.key]} onChange={e=>setForm(p=>({...p,[field.key]:e.target.value}))} style={{width:"100%",padding:"7px 10px",border:"1px solid #e2e8f0",borderRadius:"6px",fontSize:"13px",fontFamily:"inherit",color:"#1e293b",boxSizing:"border-box"}}/>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div style={{padding:"1rem 1.5rem",borderTop:"1px solid #e2e8f0",display:"flex",gap:"8px",justifyContent:"flex-end",position:"sticky",bottom:0,background:"white"}}>
+              <button onClick={()=>setShowForm(false)} style={{padding:"7px 16px",border:"1px solid #e2e8f0",borderRadius:"6px",background:"white",fontSize:"13px",cursor:"pointer",fontFamily:"inherit"}}>Cancel</button>
+              <button onClick={submitForm} disabled={!form.name.trim()||saving} style={{padding:"7px 20px",border:"none",borderRadius:"6px",background:"#6366f1",color:"white",fontSize:"13px",fontWeight:"600",cursor:form.name.trim()?"pointer":"not-allowed",fontFamily:"inherit",opacity:form.name.trim()?1:0.5}}>
+                {saving?"Saving…":editId?"Save changes":"Add freelancer"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast&&<div style={{position:"fixed",bottom:"20px",right:"20px",background:"#1e293b",color:"white",padding:"8px 16px",borderRadius:"8px",fontSize:"12px",fontWeight:"500",zIndex:200}}>{toast}</div>}
+    </div>
+  );
+}
